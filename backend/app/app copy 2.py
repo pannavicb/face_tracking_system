@@ -89,10 +89,6 @@ class GraduationApp:
         self.count_label = tk.Label(top, text="เรียกแล้ว: 0 คน", font=("Arial", 12))
         self.count_label.pack(side="left", padx=10)
 
-        # Label แสดงจำนวนรับเรียบร้อย
-        self.completed_count_label = tk.Label(top, text="รับเรียบร้อย: 0 คน", font=("Arial", 12))
-        self.completed_count_label.pack(side="left", padx=10)
-
         tk.Button(top, text="เริ่ม", command=self.start_time_count).pack(side="left")
         tk.Button(top, text="หยุด", command=self.stop_time).pack(side="left")
         tk.Button(top, text="รีเซ็ต", bg="red", fg="white", command=self.reset_status).pack(side="left", padx=10)
@@ -177,13 +173,6 @@ class GraduationApp:
         c.execute("SELECT COUNT(*) FROM graduates WHERE status IN ('เรียกแล้ว', 'รับเรียบร้อย')")
         count = c.fetchone()[0]
         self.count_label.config(text=f"เรียกแล้ว: {count} คน")
-        self.update_completed_count()  # อัพเดตจำนวนรับเรียบร้อยด้วย
-
-    def update_completed_count(self):
-        c = self.conn.cursor()
-        c.execute("SELECT COUNT(*) FROM graduates WHERE status = 'รับเรียบร้อย'")
-        count = c.fetchone()[0]
-        self.completed_count_label.config(text=f"รับเรียบร้อย: {count} คน")
 
     def reset_status(self):
         if messagebox.askyesno("ยืนยัน", "คุณแน่ใจหรือไม่ว่าต้องการรีเซ็ตข้อมูลทั้งหมด?"):
@@ -285,9 +274,9 @@ class GraduationApp:
                   (new_status, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), self.selected_id))
         self.conn.commit()
         self.update_table()
-        self.update_count()
 
     def generate_qr(self, name, order_no):
+        
         text = f"ลำดับ: {order_no}\nชื่อ: {name}"
         qr = qrcode.make(text)
         qr_path = "qr_current.png"
@@ -329,6 +318,7 @@ class GraduationApp:
             self.auto_scroll_btn.config(text="■ หยุดเลื่อนอัตโนมัติ", bg="red")
             self.start_time_count()  # เริ่มนับเวลาต่อเมื่อเริ่มเลื่อนอัตโนมัติ
 
+
     def start_auto_scroll(self):
         if not self.auto_scroll_running:
             self.auto_scroll_running = True
@@ -343,7 +333,7 @@ class GraduationApp:
         if self.current_index + 1 >= len(self.students):
             messagebox.showinfo("เสร็จแล้ว", "เรียกชื่อครบทั้งหมดแล้ว")
             self.stop_auto_scroll()
-            self.auto_scroll_btn.config(text="▶ เริ่มเลื่อนอัตโนมัติ", bg="blue")
+            self.auto_scroll_btn.config(text="▶ เลื่อนอัตโนมัติ", bg="blue")
             return
         self.call_next(print_qr=False)  # เลื่อนแต่ไม่พิมพ์ QR
         self.root.after(self.auto_scroll_interval, self._auto_scroll)

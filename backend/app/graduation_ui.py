@@ -1,56 +1,34 @@
-import tkinter as tk
+import tkinter as tk 
 from tkinter import ttk, messagebox, filedialog
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 import sqlite3
 import qrcode
 from PIL import ImageTk, Image
 import os
 import platform
-import time
-
-try:
-    import serial  # type: ignore
-except ImportError:
-    serial = None
 
 class GraduationApp:
     def __init__(self, root):
         self.root = root
         self.root.title("ระบบเรียกชื่อรับปริญญา")
         self.root.geometry("1200x750")
-        self.root.resizable(False, False)
-
         self.students = []
         self.current_index = -1
         self.running = False
-        self.selected_id = None
         self.start_time = None
-        self.elapsed_seconds = 0
-        self.call_interval_ms = 3000  # 3 วินาที
+        self.elapsed_seconds = 0.0
+        self.selected_id = None
 
-        self.conn = sqlite3.connect("graduation.db")
+        self.auto_scroll_running = False
+        self.auto_scroll_interval = 3000  # ค่าเริ่มต้น 3 วินาที
+
+        self.conn = sqlite3.connect("graduation2.db")
         self.create_table()
-        self.load_students("students.csv")
 
-        self.serial_port = None
-        self.init_serial()
-
+        self.load_students("students2.csv")
         self.create_ui()
         self.update_clock()
-        self.update_elapsed_time()
-
-    def init_serial(self):
-        if serial is None:
-            print("pyserial ไม่ได้ติดตั้ง - ข้ามการเชื่อมต่อ Serial")
-            return
-        try:
-            port_name = "COM3" if platform.system() == "Windows" else "/dev/ttyUSB0"
-            self.serial_port = serial.Serial(port_name, 9600, timeout=1)
-            print(f"เชื่อมต่อ Serial: {port_name}")
-        except Exception as e:
-            print(f"Serial port ไม่พร้อมใช้งาน: {e}")
-            self.serial_port = None
 
     def create_table(self):
         c = self.conn.cursor()
@@ -73,111 +51,142 @@ class GraduationApp:
     def load_students(self, filename):
         try:
             df = pd.read_csv(filename)
+            
+            # ถ้าไม่มีคอลัมน์ 'ลำดับ' สร้างขึ้นเอง
+            if "ลำดับ" not in df.columns:
+                df.insert(0, "ลำดับ", range(1, len(df) + 1))
+            # ถ้าไม่มีคอลัมน์ 'รหัสนักศึกษา' สร้างคอลัมน์เปล่า
+            if "รหัสนักศึกษา" not in df.columns:
+                df["รหัสนักศึกษา"] = ""
+            # ถ้าไม่มีคอลัมน์ 'ชื่อ-สกุล' สร้างชื่อเป็น 'ไม่มีชื่อ'
+            if "ชื่อ-สกุล" not in df.columns:
+                df["ชื่อ-สกุล"] = "ไม่มีชื่อ"
+
+            # เติมค่า default ถ้าค่าว่าง
+            df["ลำดับ"] = df["ลำดับ"].fillna(method="ffill").astype(int)
+            df["รหัสนักศึกษา"] = df["รหัสนักศึกษา"].fillna("")
+            df["ชื่อ-สกุล"] = df["ชื่อ-สกุล"].fillna("ไม่มีชื่อ")
+
             self.students = df.to_dict(orient="records")
+
             c = self.conn.cursor()
             c.execute("SELECT COUNT(*) FROM graduates")
             count = c.fetchone()[0]
             if count == 0:
-                for s in self.students:
+                for student in self.students:
+                    order_no = student.get("ลำดับ", None)
+                    student_id = student.get("รหัสนักศึกษา", "")
+                    name = student.get("ชื่อ-สกุล", "ไม่มีชื่อ")
+
+                    # ถ้า order_no ไม่มีให้ข้าม ไม่ insert
+                    if order_no is None:
+                        continue
+
                     c.execute("""
                         INSERT INTO graduates (order_no, student_id, name, status)
                         VALUES (?, ?, ?, ?)
-                    """, (s.get("ลำดับ"), s.get("รหัสนักศึกษา", ""), s.get("ชื่อ-สกุล"), "รอเข้ารับ"))
+                    """, (order_no, student_id, name, "รอเข้ารับ"))
                 self.conn.commit()
+            self.update_table()
         except Exception as e:
             messagebox.showerror("Error", f"โหลด CSV ไม่สำเร็จ: {e}")
 
     def create_ui(self):
-        # หัวข้อหลัก
         year = datetime.now().year - 1
-        tk.Label(self.root, text=f"พิธีพระราชทานปริญญาบัตร ประจำปีการศึกษา {year}",
-                 font=("Arial", 28, "bold"), fg="navy").pack(pady=(15, 5))
+        tk.Label(
+            self.root,
+            text=f"พิธีพระราชทานปริญญาบัตร ประจำปีการศึกษา {year}",
+            font=("Arial", 30, "bold"),
+            fg="navy"
+        ).pack(pady=(20, 10))
 
-        # แถบแสดงเวลา และข้อมูลเบื้องต้น
-        top_frame = tk.Frame(self.root)
-        top_frame.pack(fill="x", pady=5, padx=10)
+        top = tk.Frame(self.root)
+        top.pack(fill="x", pady=5)
 
-        self.time_label = tk.Label(top_frame, text="เวลา: --:--:--", font=("Arial", 14))
-        self.time_label.pack(side="left", padx=5)
+        self.time_label = tk.Label(top, text="เวลา: --:--:-- | เวลาที่ใช้ไป: 00:00:00", font=("Arial", 12))
+        self.time_label.pack(side="left", padx=10)
 
-        self.count_label = tk.Label(top_frame, text="เรียกแล้ว: 0 คน", font=("Arial", 14))
-        self.count_label.pack(side="left", padx=15)
+        self.count_label = tk.Label(top, text="เรียกแล้ว: 0 คน", font=("Arial", 12))
+        self.count_label.pack(side="left", padx=10)
 
-        self.elapsed_label = tk.Label(top_frame, text="เวลาที่ใช้: 0 วินาที", font=("Arial", 14))
-        self.elapsed_label.pack(side="left", padx=15)
+        tk.Button(top, text="เริ่ม", command=self.start_time_count).pack(side="left")
+        tk.Button(top, text="หยุด", command=self.stop_time).pack(side="left")
+        tk.Button(top, text="รีเซ็ต", bg="red", fg="white", command=self.reset_status).pack(side="left", padx=10)
+        tk.Button(top, text="Export รายชื่อที่รับแล้ว", command=self.export_completed).pack(side="left")
 
-        # ปุ่มควบคุมหลัก
-        btn_frame = tk.Frame(self.root)
-        btn_frame.pack(fill="x", pady=10, padx=10)
+        tk.Button(top, text="◀ ย้อนกลับ", bg="orange", command=self.undo_last).pack(side="left", padx=10)
+        tk.Button(top, text="▶ นำเข้าชื่อถัดไป", bg="green", fg="white", font=("Arial", 12, "bold"),
+                  command=self.call_next).pack(side="right", padx=10)
 
-        tk.Button(btn_frame, text="เริ่ม", bg="#4CAF50", fg="white", width=10, command=self.start_scroll).pack(side="left", padx=5)
-        tk.Button(btn_frame, text="หยุด", bg="#f44336", fg="white", width=10, command=self.stop_scroll).pack(side="left", padx=5)
-        tk.Button(btn_frame, text="รีเซ็ต", bg="#9E9E9E", fg="white", width=10, command=self.reset_status).pack(side="left", padx=5)
-        tk.Button(btn_frame, text="Export รายชื่อที่รับแล้ว", bg="#2196F3", fg="white", width=20, command=self.export_completed).pack(side="left", padx=5)
-        tk.Button(btn_frame, text="◀ ย้อนกลับ", bg="#FF9800", fg="white", width=10, command=self.undo_last).pack(side="left", padx=15)
-        tk.Button(btn_frame, text="▶ เรียกชื่อถัดไป", bg="#3F51B5", fg="white", width=15, font=("Arial", 12, "bold"), command=self.call_next).pack(side="right", padx=10)
+        # Dropdown เลือกความเร็วการเลื่อนอัตโนมัติ
+        speed_label = tk.Label(top, text="ความเร็วเลื่อน (ms):", font=("Arial", 11))
+        speed_label.pack(side="right", padx=(20, 5))
 
-        # ตารางแสดงข้อมูลพร้อม scrollbar
-        table_frame = tk.Frame(self.root)
-        table_frame.pack(fill="both", expand=True, padx=10)
+        self.speed_var = tk.StringVar(value=str(self.auto_scroll_interval))
+        speed_options = ["1000", "1500", "3000"]
+        self.speed_dropdown = ttk.Combobox(top, values=speed_options, textvariable=self.speed_var, width=5, state="readonly")
+        self.speed_dropdown.pack(side="right")
 
-        cols = ("id", "ลำดับ", "รหัสนักศึกษา", "ชื่อ", "เวลาเรียก", "สถานะ", "อัปเดตล่าสุด", "RFID", "สแกนครั้งที่ 1", "สแกนครั้งที่ 2")
-        self.tree = ttk.Treeview(table_frame, columns=cols, show="headings", height=18)
-        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
-        hsb = ttk.Scrollbar(table_frame, orient="horizontal", command=self.tree.xview)
-        self.tree.configure(yscroll=vsb.set, xscroll=hsb.set)
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
-        hsb.grid(row=1, column=0, sticky="ew")
-        table_frame.grid_rowconfigure(0, weight=1)
-        table_frame.grid_columnconfigure(0, weight=1)
+        # ปุ่มเลื่อนอัตโนมัติ
+        self.auto_scroll_btn = tk.Button(top, text="▶ เริ่มเลื่อนอัตโนมัติ", bg="blue", fg="white", font=("Arial", 12, "bold"),
+                                         command=self.toggle_auto_scroll)
+        self.auto_scroll_btn.pack(side="right", padx=10)
 
+        cols = ("ลำดับ", "รหัสนักศึกษา", "ชื่อ", "เวลาเรียก", "สถานะ", "อัปเดตล่าสุด", "RFID", "สแกนครั้งที่ 1", "สแกนครั้งที่ 2")
+        self.tree = ttk.Treeview(self.root, columns=cols, show="headings", height=20)
+        self.tree.pack(fill="both", expand=True, padx=20, pady=10)
         for col in cols:
             self.tree.heading(col, text=col)
-            self.tree.column(col, anchor="center", width=110 if col != "ชื่อ" else 200)
-
+            self.tree.column(col, anchor="center", width=120)
         self.tree.bind("<ButtonRelease-1>", self.on_row_select)
-        self.tree.bind("<Double-1>", self.on_double_click_start_scroll)
 
-        # แสดง QR Code
         self.qr_label = tk.Label(self.root)
-        self.qr_label.pack(pady=10)
+        self.qr_label.pack(pady=5)
 
-        # ปุ่มเปลี่ยนสถานะ
         status_frame = tk.Frame(self.root)
         status_frame.pack(pady=5)
-        tk.Label(status_frame, text="เปลี่ยนสถานะเป็น:", font=("Arial", 12)).pack(side="left", padx=5)
+        tk.Label(status_frame, text="เปลี่ยนสถานะเป็น:", font=("Arial", 11)).pack(side="left")
         for s in ["รอเข้ารับ", "อยู่บนเวที", "รับเรียบร้อย", "ขาดการเข้ารับ"]:
-            tk.Button(status_frame, text=s, width=12, command=lambda stat=s: self.update_status(stat)).pack(side="left", padx=5)
-
-        self.update_table()
-        self.update_count()
+            tk.Button(status_frame, text=s, command=lambda stat=s: self.update_status(stat)).pack(side="left", padx=5)
 
     def update_clock(self):
         now = datetime.now()
         now_str = now.strftime("%d/%m/%Y %H:%M:%S")
-        self.time_label.config(text=f"เวลา: {now_str}")
+
+        elapsed_str = "00:00:00"
+        if self.start_time:
+            elapsed = datetime.now() - self.start_time + timedelta(seconds=self.elapsed_seconds)
+            elapsed_str = str(elapsed).split('.')[0]  # ตัด microseconds ออก
+
+        self.time_label.config(text=f"เวลา: {now_str} | เวลาที่ใช้ไป: {elapsed_str}")
+        self.update_count()
         self.root.after(1000, self.update_clock)
 
-    def update_elapsed_time(self):
-        elapsed = self.elapsed_seconds
-        if self.running and self.start_time is not None:
-            elapsed += time.time() - self.start_time
-        self.elapsed_label.config(text=f"เวลาที่ใช้: {int(elapsed)} วินาที")
-        self.root.after(1000, self.update_elapsed_time)
+    def start_time_count(self):
+        if not self.running:
+            self.running = True
+            if self.start_time is None:
+                self.start_time = datetime.now()
+
+    def stop_time(self):
+        if self.running:
+            self.running = False
+            if self.start_time:
+                delta = datetime.now() - self.start_time
+                self.elapsed_seconds += delta.total_seconds()
+                self.start_time = None
 
     def update_table(self):
         for row in self.tree.get_children():
             self.tree.delete(row)
         c = self.conn.cursor()
         c.execute("""
-            SELECT id, order_no, student_id, name, call_time, status,
-                   last_update, rfid, scan_time_1, scan_time_2
+            SELECT order_no, student_id, name, call_time, status,
+                   last_update, rfid, scan_time_1, scan_time_2 
             FROM graduates ORDER BY order_no
         """)
         for row in c.fetchall():
             self.tree.insert("", "end", values=row)
-        self.update_count()
 
     def update_count(self):
         c = self.conn.cursor()
@@ -187,26 +196,30 @@ class GraduationApp:
 
     def reset_status(self):
         if messagebox.askyesno("ยืนยัน", "คุณแน่ใจหรือไม่ว่าต้องการรีเซ็ตข้อมูลทั้งหมด?"):
+            self.stop_auto_scroll()
             c = self.conn.cursor()
             c.execute("""
-                UPDATE graduates SET call_time=NULL, status='รอเข้ารับ', last_update=NULL,
-                    rfid=NULL, scan_time_1=NULL, scan_time_2=NULL
+                UPDATE graduates
+                SET call_time=NULL, status='รอเข้ารับ', last_update=NULL,
+                    scan_time_1=NULL, scan_time_2=NULL
             """)
             self.conn.commit()
             self.current_index = -1
-            self.elapsed_seconds = 0
             self.start_time = None
+            self.elapsed_seconds = 0.0
             self.running = False
             self.update_table()
             self.qr_label.config(image="")
             self.qr_label.image = None
             messagebox.showinfo("รีเซ็ตสำเร็จ", "ข้อมูลถูกรีเซ็ตเรียบร้อยแล้ว")
+            self.selected_id = None
+            self.update_count()
 
     def export_completed(self):
         c = self.conn.cursor()
         c.execute("""
             SELECT order_no, student_id, name, call_time, status,
-                   last_update, rfid, scan_time_1, scan_time_2
+                   last_update, rfid, scan_time_1, scan_time_2 
             FROM graduates WHERE status = 'รับเรียบร้อย'
         """)
         rows = c.fetchall()
@@ -220,38 +233,26 @@ class GraduationApp:
             df.to_csv(file_path, index=False, encoding="utf-8-sig")
             messagebox.showinfo("ส่งออกสำเร็จ", f"บันทึกไฟล์: {file_path}")
 
-    def call_next(self):
+    def call_next(self, print_qr=True):
         if self.current_index + 1 >= len(self.students):
             messagebox.showinfo("เสร็จแล้ว", "เรียกชื่อครบทั้งหมดแล้ว")
-            self.running = False
-            if self.start_time is not None:
-                self.elapsed_seconds += time.time() - self.start_time
-                self.start_time = None
+            self.stop_auto_scroll()
+            self.auto_scroll_btn.config(text="▶ เริ่มเลื่อนอัตโนมัติ", bg="blue")
             return
         self.current_index += 1
         student = self.students[self.current_index]
-        now_str = datetime.now().strftime("%H:%M:%S")
-        now_full = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
+        now = datetime.now().strftime("%H:%M:%S")
         c = self.conn.cursor()
         c.execute("""
             UPDATE graduates SET call_time=?, status=?, last_update=?
             WHERE order_no=?
-        """, (now_str, "เรียกแล้ว", now_full, student.get("ลำดับ")))
+        """, (now, "เรียกแล้ว", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), student.get("ลำดับ")))
         self.conn.commit()
-
         self.update_table()
-        self.generate_qr(student.get("ชื่อ-สกุล"), student.get("ลำดับ"))
-        self.send_serial(student.get("ชื่อ-สกุล"))
+        self.update_count()
         self.highlight_current_row()
-
-    def send_serial(self, text):
-        if self.serial_port:
-            try:
-                self.serial_port.write(f"{text}\n".encode())
-                print(f"ส่งข้อมูลไป Serial: {text}")
-            except Exception as e:
-                print("Serial write error:", e)
+        if print_qr:
+            self.generate_qr(student.get("ชื่อ-สกุล"), student.get("ลำดับ"))
 
     def undo_last(self):
         if self.current_index < 0:
@@ -268,29 +269,29 @@ class GraduationApp:
         self.update_table()
         self.qr_label.config(image="")
         self.qr_label.image = None
+        self.update_count()
         self.highlight_current_row()
 
     def on_row_select(self, event):
         selected = self.tree.focus()
         if selected:
-            values = self.tree.item(selected, "values")
+            item = self.tree.item(selected)
+            values = item.get("values")
             if values:
-                self.selected_id = values[0]
-            else:
-                self.selected_id = None
-        else:
-            self.selected_id = None
+                order_no = values[0]
+                c = self.conn.cursor()
+                c.execute("SELECT id FROM graduates WHERE order_no=?", (order_no,))
+                row = c.fetchone()
+                if row:
+                    self.selected_id = row[0]
 
     def update_status(self, new_status):
         if self.selected_id is None:
             messagebox.showwarning("กรุณาเลือก", "โปรดเลือกแถวจากตารางก่อน")
             return
-        now_full = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         c = self.conn.cursor()
-        c.execute("""
-            UPDATE graduates SET status=?, last_update=?
-            WHERE id=?
-        """, (new_status, now_full, self.selected_id))
+        c.execute("UPDATE graduates SET status=?, last_update=? WHERE id=?",
+                  (new_status, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), self.selected_id))
         self.conn.commit()
         self.update_table()
 
@@ -299,7 +300,6 @@ class GraduationApp:
         qr = qrcode.make(text)
         qr_path = "qr_current.png"
         qr.save(qr_path)
-
         img = Image.open(qr_path).resize((200, 200))
         img_tk = ImageTk.PhotoImage(img)
         self.qr_label.config(image=img_tk)
@@ -311,87 +311,50 @@ class GraduationApp:
             except Exception as e:
                 print("พิมพ์ไม่สำเร็จ:", e)
 
-    def on_double_click_start_scroll(self, event):
-        selected = self.tree.focus()
-        if not selected:
-            return
-        children = self.tree.get_children()
-        try:
-            self.current_index = children.index(selected)
-        except ValueError:
-            self.current_index = 0
-        if not self.running:
-            self.running = True
-            self.start_time = time.time()
-            self.scroll_rows()
-        else:
-            self.highlight_current_row()
-
-    def scroll_rows(self):
-        if not self.running:
-            return
-        children = self.tree.get_children()
-        if self.current_index >= len(children):
-            messagebox.showinfo("สิ้นสุด", "ถึงบรรทัดสุดท้ายแล้ว")
-            self.running = False
-            if self.start_time is not None:
-                self.elapsed_seconds += time.time() - self.start_time
-                self.start_time = None
-            return
-        self.highlight_current_row()
-        self.call_next()  # เรียกชื่ออัตโนมัติ
-        self.current_index += 1
-        self.root.after(self.call_interval_ms, self.scroll_rows)
-
     def highlight_current_row(self):
-        self.tree.selection_remove(self.tree.selection())
         children = self.tree.get_children()
         if 0 <= self.current_index < len(children):
             self.tree.selection_set(children[self.current_index])
             self.tree.focus(children[self.current_index])
             self.tree.see(children[self.current_index])
 
-    def start_scroll(self):
-        if not self.students:
-            messagebox.showwarning("ไม่มีข้อมูล", "ไม่มีข้อมูลนักศึกษาในระบบ")
-            return
-
-        if self.selected_id:
-            children = self.tree.get_children()
-            found_index = None
-            for idx, child in enumerate(children):
-                values = self.tree.item(child, "values")
-                if values and str(values[0]) == str(self.selected_id):
-                    found_index = idx
-                    break
-            self.current_index = found_index if found_index is not None else 0
+    def toggle_auto_scroll(self):
+        if self.auto_scroll_running:
+            self.stop_auto_scroll()
+            self.auto_scroll_btn.config(text="▶ เริ่มเลื่อนอัตโนมัติ", bg="blue")
+            self.stop_time()  # หยุดนับเวลาเมื่อหยุดเลื่อนอัตโนมัติ
         else:
-            if self.current_index < 0 or self.current_index >= len(self.tree.get_children()):
-                self.current_index = 0
+            try:
+                speed = int(self.speed_var.get())
+                if speed <= 0:
+                    raise ValueError
+                self.auto_scroll_interval = speed
+            except Exception:
+                messagebox.showwarning("ค่าไม่ถูกต้อง", "กรุณาเลือกความเร็วที่ถูกต้อง")
+                return
 
-        if not self.running:
-            self.start_time = time.time()
+            self.start_auto_scroll()
+            self.auto_scroll_btn.config(text="■ หยุดเลื่อนอัตโนมัติ", bg="red")
+            self.start_time_count()  # เริ่มนับเวลาต่อเมื่อเริ่มเลื่อนอัตโนมัติ
 
-        self.running = True
-        self.scroll_rows()
+    def start_auto_scroll(self):
+        if not self.auto_scroll_running:
+            self.auto_scroll_running = True
+            self._auto_scroll()
 
-    def stop_scroll(self):
-        if self.running and self.start_time is not None:
-            self.elapsed_seconds += time.time() - self.start_time
-            self.start_time = None
-        self.running = False
+    def stop_auto_scroll(self):
+        self.auto_scroll_running = False
 
-    def move_selection_up(self):
-        children = self.tree.get_children()
-        if self.current_index > 0:
-            self.current_index -= 1
-            self.highlight_current_row()
-
-    def move_selection_down(self):
-        children = self.tree.get_children()
-        if self.current_index + 1 < len(children):
-            self.current_index += 1
-            self.highlight_current_row()
+    def _auto_scroll(self):
+        if not self.auto_scroll_running:
+            return
+        if self.current_index + 1 >= len(self.students):
+            messagebox.showinfo("เสร็จแล้ว", "เรียกชื่อครบทั้งหมดแล้ว")
+            self.stop_auto_scroll()
+            self.auto_scroll_btn.config(text="▶ เลื่อนอัตโนมัติ", bg="blue")
+            return
+        self.call_next(print_qr=False)  # เลื่อนแต่ไม่พิมพ์ QR
+        self.root.after(self.auto_scroll_interval, self._auto_scroll)
 
 
 if __name__ == "__main__":
