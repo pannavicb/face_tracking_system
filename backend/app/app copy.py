@@ -15,8 +15,7 @@ class GraduationApp:
         self.root.geometry("1150x700")
         self.students = []
         self.current_index = -1
-        self.running = False   # ควบคุมสถานะเลื่อนอัตโนมัติ
-        self.scrolling = False # สถานะเลื่อนไฮไลต์
+        self.running = False
 
         self.conn = sqlite3.connect("graduation.db")
         self.create_table()
@@ -25,6 +24,7 @@ class GraduationApp:
         self.create_ui()
         self.update_clock()
 
+        self.calling = False  # สถานะ auto เรียกชื่อ
         self.selected_id = None
 
     def create_table(self):
@@ -54,10 +54,6 @@ class GraduationApp:
         self.time_label = tk.Label(top, text="เวลา: --:--:--", font=("Arial", 16))
         self.time_label.pack(side="left", padx=10)
 
-        # Label แสดงจำนวนรับไปแล้ว และจำนวนทั้งหมด
-        self.count_label = tk.Label(top, text="รับไปแล้ว: 0 / ทั้งหมด: 0", font=("Arial", 16))
-        self.count_label.pack(side="left", padx=20)
-
         tk.Button(top, text="เริ่ม", command=self.start_time).pack(side="left")
         tk.Button(top, text="หยุด", command=self.stop_time).pack(side="left")
 
@@ -71,7 +67,7 @@ class GraduationApp:
             self.tree.column(col, anchor="center", width=150)
 
         self.tree.bind("<ButtonRelease-1>", self.on_row_select)
-        self.tree.bind("<Double-1>", self.on_double_click_and_scroll)
+        self.tree.bind("<Double-1>", self.on_double_click_and_scroll)  # เพิ่ม bind สำหรับดับเบิลคลิก
 
         # QR Code Display
         self.qr_label = tk.Label(self.root)
@@ -84,17 +80,6 @@ class GraduationApp:
         for s in ["รอเข้ารับ", "อยู่บนเวที", "รับเรียบร้อย", "ขาดการเข้ารับ"]:
             tk.Button(status_frame, text=s, command=lambda stat=s: self.update_status(stat)).pack(side="left", padx=5)
 
-        # โหลดข้อมูลตารางและอัปเดตจำนวนตอนเริ่ม UI
-        self.update_table()
-        self.update_counts()
-
-    def update_counts(self):
-        c = self.conn.cursor()
-        c.execute("SELECT COUNT(*) FROM graduates WHERE status = 'เรียกแล้ว' OR status = 'รับเรียบร้อย' OR status = 'อยู่บนเวที'")
-        count_called = c.fetchone()[0]
-        total = len(self.students)
-        self.count_label.config(text=f"รับไปแล้ว: {count_called} / ทั้งหมด: {total}")
-
     def update_clock(self):
         if self.running:
             now = datetime.now().strftime("%H:%M:%S")
@@ -102,19 +87,10 @@ class GraduationApp:
         self.root.after(1000, self.update_clock)
 
     def start_time(self):
-        if not self.students:
-            messagebox.showwarning("ไม่มีข้อมูล", "ไม่มีข้อมูลนักศึกษาในระบบ")
-            return
         self.running = True
-        if not self.scrolling:
-            if self.current_index < 0 or self.current_index >= len(self.students):
-                self.current_index = 0
-            self.scrolling = True
-            self.scroll_until_end()
 
     def stop_time(self):
         self.running = False
-        self.scrolling = False
 
     def on_double_click_and_scroll(self, event):
         selected = self.tree.focus()
@@ -122,9 +98,7 @@ class GraduationApp:
             return
 
         item_values = self.tree.item(selected)["values"]
-        if not item_values:
-            return
-        selected_order = item_values[0]
+        selected_order = item_values[0]  # สมมุติว่า "ลำดับ" คือคอลัมน์แรก
 
         for i, student in enumerate(self.students):
             if str(student["ลำดับ"]) == str(selected_order):
@@ -133,25 +107,16 @@ class GraduationApp:
         else:
             return
 
-        if not self.running or not self.scrolling:
-            self.running = True
-            self.scrolling = True
-            self.current_index += 1
-            self.scroll_until_end()
-        else:
-            self.highlight_current_row()
+        self.scroll_until_end()
 
     def scroll_until_end(self):
-        if not self.running or not self.scrolling:
-            return
-
         if self.current_index >= len(self.students):
             messagebox.showinfo("สิ้นสุด", "ถึงบรรทัดสุดท้ายแล้ว")
-            self.scrolling = False
             return
 
         self.highlight_current_row()
         self.current_index += 1
+
         self.root.after(1000, self.scroll_until_end)
 
     def highlight_current_row(self):
@@ -174,7 +139,6 @@ class GraduationApp:
             self.conn.commit()
             self.current_index = max(0, self.current_index - 1)
             self.update_table()
-            self.update_counts()
             self.qr_label.config(image="")
             self.qr_label.image = None
         else:
@@ -187,7 +151,6 @@ class GraduationApp:
         c.execute("SELECT id, order_no, name, call_time, status FROM graduates ORDER BY order_no")
         for row in c.fetchall():
             self.tree.insert("", "end", values=row[1:], iid=row[0])
-        self.update_counts()
 
     def call_next(self):
         if self.current_index + 1 >= len(self.students):

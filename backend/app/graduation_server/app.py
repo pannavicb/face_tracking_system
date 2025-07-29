@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify, render_template
-from datetime import datetime, timedelta
+from datetime import datetime
 import sqlite3
 
 app = Flask(__name__)
@@ -11,12 +11,36 @@ def init_db():
     c.execute("""
         CREATE TABLE IF NOT EXISTS graduates (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            order_no INTEGER,
-            name TEXT,
+            order_no INTEGER NOT NULL,
+            student_id TEXT,
+            name TEXT NOT NULL,
             call_time TEXT,
-            status TEXT
+            status TEXT DEFAULT 'รอเข้ารับ',
+            last_update TEXT,
+            rfid TEXT UNIQUE,
+            scan_time_1 TEXT,
+            scan_time_2 TEXT
         )
     """)
+    conn.commit()
+    conn.close()
+
+# -- DB Schema Ensure --
+def ensure_columns_exist():
+    conn = sqlite3.connect("graduation.db")
+    c = conn.cursor()
+    fields = [
+        ("student_id", "TEXT"),
+        ("last_update", "TEXT"),
+        ("rfid", "TEXT"),
+        ("scan_time_1", "TEXT"),
+        ("scan_time_2", "TEXT"),
+    ]
+    for col, col_type in fields:
+        try:
+            c.execute(f"ALTER TABLE graduates ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            continue  # Column already exists
     conn.commit()
     conn.close()
 
@@ -24,7 +48,7 @@ def init_db():
 def dashboard():
     conn = sqlite3.connect("graduation.db")
     c = conn.cursor()
-    c.execute("SELECT order_no, name, call_time, status FROM graduates ORDER BY order_no")
+    c.execute("SELECT order_no, student_id, name, call_time, status, last_update FROM graduates ORDER BY order_no")
     rows = c.fetchall()
     conn.close()
     return render_template("dashboard.html", rows=rows)
@@ -42,16 +66,20 @@ def update_status():
     try:
         conn = sqlite3.connect("graduation.db")
         c = conn.cursor()
-
-        # อัปเดตสถานะ + เวลาล่าสุด
         c.execute("UPDATE graduates SET status = ?, last_update = ? WHERE order_no = ?", (status, now, order_no))
         conn.commit()
         conn.close()
 
-        return jsonify({"message": "Status updated", "order_no": order_no, "status": status}), 200
+        return jsonify({
+            "message": "Status updated",
+            "order_no": order_no,
+            "status": status,
+            "last_update": now
+        }), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     init_db()
-    app.run(host="0.0.0.0", port=8000)
+    ensure_columns_exist()
+    app.run(host="0.0.0.0", port=8000, debug=True)

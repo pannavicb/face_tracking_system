@@ -24,15 +24,22 @@ class GraduationApp:
         self.create_ui()
         self.update_clock()
 
+        self.selected_id = None
+
     def create_table(self):
         c = self.conn.cursor()
         c.execute("""
             CREATE TABLE IF NOT EXISTS graduates (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                order_no INTEGER,
-                name TEXT,
+                order_no INTEGER NOT NULL,
+                student_id TEXT,
+                name TEXT NOT NULL,
                 call_time TEXT,
-                status TEXT
+                status TEXT DEFAULT 'รอเข้ารับ',
+                last_update TEXT,
+                rfid TEXT UNIQUE,
+                scan_time_1 TEXT,
+                scan_time_2 TEXT
             )
         """)
         self.conn.commit()
@@ -41,6 +48,27 @@ class GraduationApp:
         try:
             df = pd.read_csv(filename)
             self.students = df.to_dict(orient="records")
+
+            c = self.conn.cursor()
+            c.execute("SELECT COUNT(*) FROM graduates")
+            count = c.fetchone()[0]
+
+            # ถ้าตารางยังว่าง ให้เพิ่มข้อมูลจาก CSV
+            if count == 0:
+                for student in self.students:
+                    c.execute("""
+                        INSERT INTO graduates (order_no, student_id, name, status)
+                        VALUES (?, ?, ?, ?)
+                    """, (
+                        student.get("ลำดับ"),
+                        student.get("รหัสนักศึกษา", ""),  # แก้ชื่อคอลัมน์ตาม CSV จริง
+                        student.get("ชื่อ-สกุล"),
+                        "รอเข้ารับ"
+                    ))
+                self.conn.commit()
+
+            self.update_table()
+
         except Exception as e:
             messagebox.showerror("Error", f"โหลด CSV ไม่สำเร็จ: {e}")
 
@@ -57,9 +85,10 @@ class GraduationApp:
         tk.Button(top, text="◀ ย้อนกลับ", bg="orange", command=self.undo_last).pack(side="left", padx=10)
         tk.Button(top, text="▶ เรียกชื่อถัดไป", bg="green", fg="white", font=("Arial", 12, "bold"), command=self.call_next).pack(side="right", padx=10)
 
-        self.tree = ttk.Treeview(self.root, columns=("ลำดับ", "ชื่อ", "เวลา", "สถานะ"), show="headings", height=18)
+        cols = ("ลำดับ", "รหัสนักศึกษา", "ชื่อ", "เวลาเรียก", "สถานะ")
+        self.tree = ttk.Treeview(self.root, columns=cols, show="headings", height=18)
         self.tree.pack(fill="both", expand=True, padx=20, pady=10)
-        for col in ["ลำดับ", "ชื่อ", "เวลา", "สถานะ"]:
+        for col in cols:
             self.tree.heading(col, text=col)
             self.tree.column(col, anchor="center", width=150)
 
@@ -69,14 +98,12 @@ class GraduationApp:
         self.qr_label = tk.Label(self.root)
         self.qr_label.pack(pady=5)
 
-        # แก้ไขสถานะ
+        # ปุ่มเปลี่ยนสถานะ
         status_frame = tk.Frame(self.root)
         status_frame.pack(pady=5)
         tk.Label(status_frame, text="เปลี่ยนสถานะเป็น:", font=("Arial", 11)).pack(side="left")
         for s in ["รอเข้ารับ", "อยู่บนเวที", "รับเรียบร้อย", "ขาดการเข้ารับ"]:
             tk.Button(status_frame, text=s, command=lambda stat=s: self.update_status(stat)).pack(side="left", padx=5)
-
-        self.selected_id = None
 
     def update_clock(self):
         if self.running:
@@ -94,9 +121,11 @@ class GraduationApp:
         for row in self.tree.get_children():
             self.tree.delete(row)
         c = self.conn.cursor()
-        c.execute("SELECT id, order_no, name, call_time, status FROM graduates ORDER BY order_no")
+        c.execute("SELECT id, order_no, student_id, name, call_time, status FROM graduates ORDER BY order_no")
         for row in c.fetchall():
-            self.tree.insert("", "end", values=row[1:], iid=row[0])
+            # row[0]=id, row[1]=order_no, row[2]=student_id, row[3]=name, row[4]=call_time, row[5]=status
+            display_values = row[1:]  # เอาทุกอย่างยกเว้น id ไปแสดง
+            self.tree.insert("", "end", values=display_values, iid=row[0])
 
     def call_next(self):
         if self.current_index + 1 >= len(self.students):
@@ -108,19 +137,23 @@ class GraduationApp:
         now = datetime.now().strftime("%H:%M:%S")
 
         c = self.conn.cursor()
-        c.execute("INSERT INTO graduates (order_no, name, call_time, status) VALUES (?, ?, ?, ?)",
-                  (student["ลำดับ"], student["ชื่อ-สกุล"], now, "เรียกแล้ว"))
+        # ใช้ UPDATE เพราะข้อมูล student มีใน DB แล้ว
+        c.execute("""
+            UPDATE graduates SET call_time=?, status=?, last_update=?
+            WHERE order_no=?
+        """, (now, "เรียกแล้ว", datetime.now().strftime("%Y-%m-%d %H:%M:%S"), student.get("ลำดับ")))
         self.conn.commit()
         self.update_table()
 
-        self.generate_qr(student["ชื่อ-สกุล"], student["ลำดับ"])
+        self.generate_qr(student.get("ชื่อ-สกุล"), student.get("ลำดับ"))
 
     def undo_last(self):
         c = self.conn.cursor()
         c.execute("SELECT id FROM graduates ORDER BY id DESC LIMIT 1")
         row = c.fetchone()
         if row:
-            c.execute("DELETE FROM graduates WHERE id = ?", (row[0],))
+            # ลบข้อมูลล่าสุด (เรียกชื่อ)
+            c.execute("UPDATE graduates SET call_time=NULL, status='รอเข้ารับ', last_update=NULL WHERE id=?", (row[0],))
             self.conn.commit()
             self.current_index = max(0, self.current_index - 1)
             self.update_table()
@@ -139,7 +172,8 @@ class GraduationApp:
             messagebox.showwarning("กรุณาเลือก", "โปรดเลือกแถวจากตารางก่อน")
             return
         c = self.conn.cursor()
-        c.execute("UPDATE graduates SET status = ? WHERE id = ?", (new_status, self.selected_id))
+        c.execute("UPDATE graduates SET status = ?, last_update = ? WHERE id = ?",
+                  (new_status, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), self.selected_id))
         self.conn.commit()
         self.update_table()
 
@@ -149,18 +183,17 @@ class GraduationApp:
         qr_path = "qr_current.png"
         qr.save(qr_path)
 
-        # แสดงบนหน้าจอ
         img = Image.open(qr_path).resize((200, 200))
         img_tk = ImageTk.PhotoImage(img)
         self.qr_label.config(image=img_tk)
         self.qr_label.image = img_tk
 
-        # พิมพ์ QR อัตโนมัติ (Windows เท่านั้น)
         if platform.system() == "Windows":
             try:
                 os.startfile(qr_path, "print")
             except Exception as e:
                 print("พิมพ์ไม่สำเร็จ:", e)
+
 
 if __name__ == "__main__":
     root = tk.Tk()
