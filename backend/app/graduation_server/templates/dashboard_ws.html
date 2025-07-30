@@ -21,18 +21,28 @@
     <thead>
       <tr>
         <th>ลำดับ</th>
+        <th>รหัสนักศึกษา</th>
         <th>ชื่อ</th>
         <th>เวลาเรียก</th>
         <th>สถานะ</th>
+        <th>อัปเดตล่าสุด</th>
+        <th>RFID</th>
+        <th>สแกนครั้งที่ 1</th>
+        <th>สแกนครั้งที่ 2</th>
       </tr>
     </thead>
     <tbody>
       {% for row in rows %}
-      <tr id="row-{{row[0]}}" class="{{ row[3] }}">
+      <tr id="row-{{row[0]}}" class="{{ row[4] }}">
         <td>{{ row[0] }}</td>
         <td>{{ row[1] }}</td>
-        <td>{{ row[2] or '-' }}</td>
-        <td>{{ row[3] }}</td>
+        <td>{{ row[2] }}</td>
+        <td>{{ row[3] or '-' }}</td>
+        <td>{{ row[4] }}</td>
+        <td>{{ row[5] or '-' }}</td>
+        <td>{{ row[6] or '-' }}</td>
+        <td>{{ row[7] or '-' }}</td>
+        <td>{{ row[8] or '-' }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -45,7 +55,12 @@
       const row = document.getElementById("row-" + data.order_no);
       if (row) {
         row.className = data.status;
-        row.children[3].textContent = data.status;
+        row.children[4].textContent = data.status;
+        row.children[5].textContent = data.last_update || '-';
+        row.children[3].textContent = data.call_time || '-';
+        row.children[6].textContent = data.rfid || '-';
+        row.children[7].textContent = data.scan_time_1 || '-';
+        row.children[8].textContent = data.scan_time_2 || '-';
       }
     });
   </script>
